@@ -74,6 +74,10 @@
   .post-foot .like { display:flex; align-items:center; gap:5px; background:none; border:1px solid var(--line); border-radius:999px; padding:4px 10px; cursor:pointer; color:var(--muted); font-family:inherit; }
   .post-foot .like:hover { border-color:var(--wine); color:var(--wine); }
   .church-tag { font-size:11px; color:var(--gold); }
+  .foot-right { display:flex; align-items:center; gap:12px; }
+  .edit-btn, .delete-btn { background:none; border:none; padding:2px; font-size:13.5px; cursor:pointer; color:var(--muted); line-height:1; font-family:inherit; }
+  .edit-btn:hover { color:var(--navy); }
+  .delete-btn:hover { color:var(--wine); }
   .empty-msg, .loading-msg { padding:30px 20px; text-align:center; color:var(--muted); font-size:13.5px; }
 
   .notice-card { border-left:3px solid var(--gold); }
@@ -290,6 +294,7 @@
   var isConfigured = firebaseConfig.apiKey && firebaseConfig.apiKey.indexOf('YOUR_') !== 0;
   var db = null;
   var firebaseReady = false;
+  var currentUid = null; // 로그인(익명)한 내 uid — 내 글인지 판별용
 
   // ---- demo fallback data (Firebase 설정 전에는 이 데이터로 화면을 채웁니다) ----
   var demoPosts = [
@@ -315,6 +320,7 @@
       db = firebase.firestore();
       firebase.auth().signInAnonymously().then(function () {
         firebaseReady = true;
+        currentUid = firebase.auth().currentUser ? firebase.auth().currentUser.uid : null;
         attachListeners();
       }).catch(function (err) {
         console.error('익명 인증 실패:', err);
@@ -394,6 +400,12 @@
     var likeBtn = p.notice
       ? '<span></span>'
       : '<button class="like" data-id="' + p.id + '" data-cat="' + p.category + '">🙏 공감 ' + (p.likeCount || 0) + '</button>';
+    // 데모 모드에서는 누구나(본인이 쓴 글이므로), 실제 모드에서는 authorUid가 내 uid와 같을 때만 수정·삭제 버튼 노출
+    var isOwner = !firebaseReady || (p.authorUid && currentUid && p.authorUid === currentUid);
+    var ownerBtnsHtml = (!p.notice && isOwner)
+      ? ('<button class="edit-btn" data-id="' + p.id + '" data-cat="' + p.category + '" title="수정">✏️ 수정</button>' +
+         '<button class="delete-btn" data-id="' + p.id + '" data-cat="' + p.category + '" title="삭제">🗑️ 삭제</button>')
+      : '';
     return (
       '<div class="post-card' + noticeClass + '">' +
         (p.notice ? titleHtml : (
@@ -402,7 +414,9 @@
           verseHtml
         )) +
         '<p class="content">' + escapeHtml(p.content) + '</p>' +
-        '<div class="post-foot">' + likeBtn + '<span class="church-tag">' + escapeHtml(p.churchName || '시온성교회') + '</span></div>' +
+        '<div class="post-foot">' + likeBtn +
+          '<div class="foot-right">' + ownerBtnsHtml + '<span class="church-tag">' + escapeHtml(p.churchName || '시온성교회') + '</span></div>' +
+        '</div>' +
       '</div>'
     );
   }
@@ -432,23 +446,49 @@
     el.innerHTML = filtered.slice(0, 30).map(postCardHtml).join('');
   }
 
+  function findPostById(id) {
+    var all = [].concat(cache.gratitude, cache.fellowship, cache.gospel, cache.church);
+    for (var i = 0; i < all.length; i++) { if (all[i].id === id) return all[i]; }
+    return null;
+  }
+
   // ============================================================
-  // 5) 공감(좋아요)
+  // 5) 공감(좋아요) / 수정 / 삭제
   // ============================================================
   document.addEventListener('click', function (e) {
-    var btn = e.target.closest('.like');
-    if (!btn) return;
-    var id = btn.dataset.id, cat = btn.dataset.cat;
-    if (firebaseReady) {
-      db.collection('posts').doc(id).update({
-        likeCount: firebase.firestore.FieldValue.increment(1)
-      }).catch(function (err) { console.error('공감 실패:', err); });
-    } else {
-      demoLikes[id] = (demoLikes[id] || 0) + 1;
-      var demoP = demoPosts.find(function (p) { return p.id === id; });
-      if (demoP) { demoP.likeCount = (demoP.likeCount || 0) + 1; renderAllFromDemo(); }
+    var likeBtn = e.target.closest('.like');
+    if (likeBtn) {
+      var id = likeBtn.dataset.id;
+      if (firebaseReady) {
+        db.collection('posts').doc(id).update({
+          likeCount: firebase.firestore.FieldValue.increment(1)
+        }).catch(function (err) { console.error('공감 실패:', err); });
+      } else {
+        demoLikes[id] = (demoLikes[id] || 0) + 1;
+        var demoP = demoPosts.find(function (p) { return p.id === id; });
+        if (demoP) { demoP.likeCount = (demoP.likeCount || 0) + 1; renderAllFromDemo(); }
+      }
+      return;
     }
+
+    var editBtn = e.target.closest('.edit-btn');
+    if (editBtn) { openEditSheet(editBtn.dataset.id); return; }
+
+    var delBtn = e.target.closest('.delete-btn');
+    if (delBtn) { handleDelete(delBtn.dataset.id); return; }
   });
+
+  function handleDelete(id) {
+    if (!confirm('정말 삭제하시겠어요? 삭제하면 되돌릴 수 없습니다.')) return;
+    if (firebaseReady) {
+      db.collection('posts').doc(id).delete().catch(function (err) {
+        alert('삭제에 실패했습니다: ' + err.message);
+      });
+    } else {
+      demoPosts = demoPosts.filter(function (p) { return p.id !== id; });
+      renderAllFromDemo();
+    }
+  }
 
   // ============================================================
   // 6) 탭 전환 / 검색 / 필터
@@ -488,8 +528,11 @@
   var verseInput = document.getElementById('composeVerse');
   var contentInput = document.getElementById('composeContent');
   var postBtn = document.getElementById('composePost');
+  var editingPostId = null; // null이면 새 글쓰기, 값이 있으면 해당 글 수정 모드
 
   fab.addEventListener('click', function () {
+    editingPostId = null;
+    postBtn.textContent = '나누기';
     catLabel.textContent = CATEGORY_LABEL[currentCategory] || '';
     sheet.classList.add('open');
   });
@@ -499,22 +542,61 @@
   function closeSheet() {
     sheet.classList.remove('open');
     nameInput.value = ''; verseInput.value = ''; contentInput.value = '';
+    editingPostId = null;
+    postBtn.textContent = '나누기';
+  }
+
+  function openEditSheet(id) {
+    var post = findPostById(id) || demoPosts.find(function (p) { return p.id === id; });
+    if (!post) return;
+    editingPostId = id;
+    catLabel.textContent = (CATEGORY_LABEL[post.category] || '') + ' · 수정 중';
+    nameInput.value = (post.authorName === '이름 비공개') ? '' : (post.authorName || '');
+    verseInput.value = post.verseRef || '';
+    contentInput.value = post.content || '';
+    postBtn.textContent = '수정 완료';
+    sheet.classList.add('open');
   }
 
   postBtn.addEventListener('click', function () {
     var content = contentInput.value.trim();
     postBtn.disabled = true;
 
-    var newPost = {
-      category: currentCategory,
+    var fields = {
       authorName: nameInput.value.trim() || '이름 비공개',
       verseRef: verseInput.value.trim(),
-      content: content,
-      churchName: '시온성교회',
-      likeCount: 0
+      content: content
     };
 
+    if (editingPostId) {
+      // ---- 수정 모드 ----
+      var editId = editingPostId;
+      if (firebaseReady) {
+        db.collection('posts').doc(editId).update(fields).then(function () {
+          postBtn.disabled = false;
+          closeSheet();
+        }).catch(function (err) {
+          postBtn.disabled = false;
+          alert('수정에 실패했습니다: ' + err.message);
+        });
+      } else {
+        var demoEdit = demoPosts.find(function (p) { return p.id === editId; });
+        if (demoEdit) { Object.assign(demoEdit, fields); renderAllFromDemo(); }
+        postBtn.disabled = false;
+        closeSheet();
+      }
+      return;
+    }
+
+    // ---- 새 글쓰기 모드 ----
+    var newPost = Object.assign({
+      category: currentCategory,
+      churchName: '시온성교회',
+      likeCount: 0
+    }, fields);
+
     if (firebaseReady) {
+      newPost.authorUid = currentUid;
       newPost.createdAt = firebase.firestore.FieldValue.serverTimestamp();
       db.collection('posts').add(newPost).then(function () {
         postBtn.disabled = false;
@@ -527,6 +609,7 @@
     } else {
       newPost.id = 'local' + Date.now();
       newPost.createdAt = Date.now();
+      newPost.authorUid = 'demo-user';
       demoPosts.unshift(newPost);
       renderAllFromDemo();
       postBtn.disabled = false;
@@ -598,14 +681,15 @@
   });
 })();
 
-// 나누기 완료 시 랜덤 축하 애니메이션 (폭죽 / 색종이 / 꽃잎, 5초간)
+// 나누기 완료 시 랜덤 축하 애니메이션 (폭죽 / 색종이 / 꽃잎, 7초간)
 function playCelebration() {
   var MODES = ['fireworks', 'confetti', 'petals'];
   var mode = MODES[Math.floor(Math.random() * MODES.length)];
-  var DURATION = 5000;
-  var COLORS = ['#B98B34', '#E4C87C', '#6B2737', '#1E2438', '#F4EEDD', '#8FBF7A', '#E8A6C1', '#7AB8E8'];
+  var DURATION = 7000;
+  var COLORS = ['#B98B34', '#E4C87C', '#6B2737', '#1E2438', '#F4EEDD', '#8FBF7A', '#E8A6C1', '#7AB8E8', '#FF6B6B', '#4FD1C5'];
 
   function rand(a, b) { return a + Math.random() * (b - a); }
+  function pickColor() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
 
   var canvas = document.createElement('canvas');
   canvas.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:9999;';
@@ -620,20 +704,21 @@ function playCelebration() {
   var particles = [];
   var fireworkParticles = [];
   var lastBurst = 0;
+  var nextBurstGap = 250;
 
   if (mode === 'confetti') {
-    for (var i = 0; i < 150; i++) {
+    for (var i = 0; i < 170; i++) {
       particles.push({
         x: rand(0, canvas.width), y: rand(-canvas.height, 0),
         w: rand(6, 12), h: rand(8, 16),
-        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        color: pickColor(),
         vy: rand(2, 5), vx: rand(-1.5, 1.5),
         rot: rand(0, 360), vr: rand(-8, 8)
       });
     }
   } else if (mode === 'petals') {
     var PETALS = ['🌸', '🌺', '🌼'];
-    for (var j = 0; j < 60; j++) {
+    for (var j = 0; j < 70; j++) {
       particles.push({
         x: rand(0, canvas.width), y: rand(-canvas.height, 0),
         size: rand(16, 26),
@@ -645,18 +730,36 @@ function playCelebration() {
     }
   }
 
-  function spawnBurst() {
-    var cx = rand(canvas.width * 0.2, canvas.width * 0.8);
-    var cy = rand(canvas.height * 0.15, canvas.height * 0.5);
-    var color = COLORS[Math.floor(Math.random() * COLORS.length)];
-    var count = 42;
+  // ---- 화려해진 폭죽: 중심 섬광 + 방사형 불꽃 + 크래클(2차 분열) + 트레일 ----
+  function spawnBurst(cx, cy) {
+    var hue1 = pickColor(), hue2 = pickColor();
+    var count = Math.floor(rand(65, 95));
+    var speedBase = rand(3.2, 6.5);
+
+    fireworkParticles.push({ type: 'flash', x: cx, y: cy, life: 1, decay: 0.07, maxR: rand(34, 58) });
+
     for (var k = 0; k < count; k++) {
-      var angle = (Math.PI * 2 * k) / count;
-      var speed = rand(2, 6);
+      var angle = (Math.PI * 2 * k) / count + rand(-0.06, 0.06);
+      var speed = speedBase * rand(0.55, 1.2);
       fireworkParticles.push({
-        x: cx, y: cy, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-        color: color, life: 1, decay: rand(0.012, 0.022)
+        type: 'spark',
+        x: cx, y: cy,
+        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+        color: Math.random() < 0.5 ? hue1 : hue2,
+        life: 1, decay: rand(0.009, 0.016),
+        size: rand(1.6, 3.2),
+        trail: [],
+        crackled: false
       });
+    }
+  }
+
+  function maybeSpawnBursts(elapsed) {
+    var cx = rand(canvas.width * 0.15, canvas.width * 0.85);
+    var cy = rand(canvas.height * 0.12, canvas.height * 0.5);
+    spawnBurst(cx, cy);
+    if (Math.random() < 0.45) {
+      spawnBurst(rand(canvas.width * 0.15, canvas.width * 0.85), rand(canvas.height * 0.12, canvas.height * 0.5));
     }
   }
 
@@ -693,19 +796,58 @@ function playCelebration() {
         ctx.restore();
       });
     } else { // fireworks
-      if (now - lastBurst > 550 && elapsed < DURATION - 900) {
-        spawnBurst();
+      if (elapsed < DURATION - 1400 && now - lastBurst > nextBurstGap) {
+        maybeSpawnBursts(elapsed);
         lastBurst = now;
+        nextBurstGap = rand(340, 620);
       }
+
       fireworkParticles.forEach(function (p) {
-        p.x += p.vx; p.y += p.vy; p.vy += 0.045; p.life -= p.decay;
+        if (p.type === 'flash') { p.life -= p.decay; return; }
+        p.vx *= 0.985; p.vy *= 0.985; p.vy += 0.05;
+        p.x += p.vx; p.y += p.vy;
+        p.life -= p.decay;
+        p.trail.push({ x: p.x, y: p.y });
+        if (p.trail.length > 5) p.trail.shift();
+        if (!p.crackled && p.life < 0.42 && Math.random() < 0.018) {
+          p.crackled = true;
+          for (var m = 0; m < 6; m++) {
+            var a2 = rand(0, Math.PI * 2), s2 = rand(0.6, 2.2);
+            fireworkParticles.push({
+              type: 'spark', x: p.x, y: p.y, vx: Math.cos(a2) * s2, vy: Math.sin(a2) * s2,
+              color: p.color, life: 0.65, decay: rand(0.022, 0.036), size: rand(1, 2), trail: [], crackled: true
+            });
+          }
+        }
       });
       fireworkParticles = fireworkParticles.filter(function (p) { return p.life > 0; });
+
       fireworkParticles.forEach(function (p) {
+        if (p.type === 'flash') {
+          var r = p.maxR * (1 - p.life);
+          var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(r, 1));
+          grad.addColorStop(0, 'rgba(255,255,255,' + Math.max(p.life, 0) + ')');
+          grad.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(r, 1), 0, Math.PI * 2); ctx.fill();
+          return;
+        }
+        // 트레일(잔상)
+        if (p.trail.length > 1) {
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = p.size * 0.6;
+          for (var t = 1; t < p.trail.length; t++) {
+            ctx.globalAlpha = Math.max(p.life, 0) * (t / p.trail.length) * 0.5;
+            ctx.beginPath();
+            ctx.moveTo(p.trail[t - 1].x, p.trail[t - 1].y);
+            ctx.lineTo(p.trail[t].x, p.trail[t].y);
+            ctx.stroke();
+          }
+        }
         ctx.globalAlpha = Math.max(p.life, 0);
         ctx.fillStyle = p.color;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         ctx.fill();
       });
       ctx.globalAlpha = 1;
